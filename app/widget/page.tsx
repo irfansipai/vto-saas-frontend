@@ -48,8 +48,18 @@ export default function WidgetPage() {
       try {
         setSystemStatus(`Authenticating tenant and fetching SKU: ${sku}...`);
 
+        // 1. Pull the base path safely from the environment configuration
+        const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+
+        if (!apiBaseUrl) {
+          throw new Error(
+            "Frontend environment variable NEXT_PUBLIC_API_URL is unset.",
+          );
+        }
+
+        // 2. Construct the production runtime request string
         const response = await fetch(
-          `http://127.0.0.1:8000/api/v1/widget/config?api_key=${apiKey}&sku=${sku}`,
+          `${apiBaseUrl}/api/v1/widget/config?api_key=${apiKey}&sku=${sku}`,
         );
 
         if (!response.ok) {
@@ -58,13 +68,10 @@ export default function WidgetPage() {
 
         const data = await response.json();
         setProductConfig(data);
-
-        // NEW: Mirror the payload into our mutable loop buffer instantly
         productConfigRef.current = data;
 
-        // Load the image dynamically from the URL provided by the backend
         const img = new Image();
-        img.crossOrigin = "anonymous"; // CRITICAL: Prevents CORS canvas tainting from external URLs
+        img.crossOrigin = "anonymous";
         img.src = data.image_url;
         img.onload = () => {
           activeAssetRef.current = img;
@@ -78,6 +85,7 @@ export default function WidgetPage() {
 
     fetchProductData();
   }, [searchParams]);
+
   // 1. Concurrent Initialization of both AI Models
   useEffect(() => {
     const initializeModels = async () => {
