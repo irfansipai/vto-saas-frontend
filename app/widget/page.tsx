@@ -1,100 +1,77 @@
+// frontend/app/widget/page.tsx
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { HandLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
-import { Canvas, useFrame } from "@react-three/fiber";
-import * as THREE from "three";
+import { FaceLandmarker, PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import { JewelryModules } from "@/utils/jewelryModules";
 
-// --- 3D COMPONENT ---
-// This runs inside the Three.js Canvas, completely isolated from React's DOM rendering.
-const JewelryModel = ({ landmarkRef }: { landmarkRef: React.MutableRefObject<any> }) => {
-  const meshRef = useRef<THREE.Mesh>(null);
-
-  useFrame(({ viewport }) => {
-    if (!meshRef.current || !landmarkRef.current) {
-      // Hide the mesh if no hand is detected
-      if (meshRef.current) meshRef.current.visible = false;
-      return;
-    }
-
-    meshRef.current.visible = true;
-
-    // We want to attach to the base of the index finger (Landmark 5)
-    const indexBase = landmarkRef.current[5];
-
-    // THE MATH: Mapping MediaPipe (0 to 1) to Three.js World Space
-    // MediaPipe origin is Top-Left. Three.js origin is Center.
-    const x = (indexBase.x - 0.5) * viewport.width;
-    const y = -(indexBase.y - 0.5) * viewport.height;
-    
-    // Z is relative depth. We scale it up so it moves forward/backward noticeably
-    const z = -indexBase.z * 10; 
-
-    // Smoothly interpolate the position so it doesn't jitter
-    meshRef.current.position.lerp(new THREE.Vector3(x, y, z), 0.5);
-
-    // Optional: Add basic rotation based on two knuckles to match finger angle
-    const indexTip = landmarkRef.current[8];
-    if (indexTip) {
-        const dx = (indexTip.x - indexBase.x) * viewport.width;
-        const dy = -(indexTip.y - indexBase.y) * viewport.height;
-        const angle = Math.atan2(dy, dx);
-        meshRef.current.rotation.z = angle - Math.PI / 2;
-    }
-  });
-
-  return (
-    <mesh ref={meshRef}>
-      <boxGeometry args={[0.3, 0.3, 0.3]} />
-      <meshStandardMaterial color="gold" metalness={0.8} roughness={0.2} />
-    </mesh>
-  );
-};
-
-
-// --- MAIN APP COMPONENT ---
 export default function WidgetPage() {
+  // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const handLandmarkerRef = useRef<HandLandmarker | null>(null);
+  const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+  const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const requestRef = useRef<number | null>(null);
-  
-  // The bridge between AI and 3D
-  const latestLandmarks = useRef<any>(null);
 
+  // NEW: Track the exact video frame timestamp
+  const lastVideoTimeRef = useRef<number>(-1);
+
+  // --- State ---
   const [modelLoaded, setModelLoaded] = useState(false);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
-  const [systemStatus, setSystemStatus] = useState("Waiting for initialization...");
+  const [systemStatus, setSystemStatus] = useState("Initializing...");
 
-  // 1. Initialize MediaPipe
+  // 1. Concurrent Initialization of both AI Models
   useEffect(() => {
-    const initializeModel = async () => {
+    const initializeModels = async () => {
       try {
-        setSystemStatus("Downloading AI Model...");
+        setSystemStatus("Downloading Multi-Model AI Bundle...");
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
         );
 
-        handLandmarkerRef.current = await HandLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-            delegate: "GPU",
-          },
-          runningMode: "VIDEO",
-          numHands: 1,
-        });
+        // Spin up both networks in parallel via native promises
+        const [faceModel, poseModel] = await Promise.all([
+          FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+              delegate: "GPU",
+            },
+            runningMode: "VIDEO",
+            numFaces: 1
+          }),
+          PoseLandmarker.createFromOptions(vision, {
+            baseOptions: {
+              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+              delegate: "GPU",
+            },
+            runningMode: "VIDEO",
+            numPoses: 1
+          })
+        ]);
+
+        faceLandmarkerRef.current = faceModel;
+        poseLandmarkerRef.current = poseModel;
 
         setModelLoaded(true);
-        setSystemStatus("AI Ready.");
+        setSystemStatus("Dual AI Engines Online. Standby.");
       } catch (error) {
-        console.error(error);
+        console.error("Multi-model load error:", error);
+        setSystemStatus("Failed to initialize system neural paths.");
       }
     };
-    initializeModel();
+    initializeModels();
+
+    return () => {
+      if (faceLandmarkerRef.current) faceLandmarkerRef.current.close();
+      if (poseLandmarkerRef.current) poseLandmarkerRef.current.close();
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+    };
   }, []);
 
-  // 2. Camera Enumeration
+  // 2. Camera Hardware Discovery & Initial Handshake
   const initializeCameraSystem = async () => {
     try {
       const initialStream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -105,10 +82,11 @@ export default function WidgetPage() {
       if (videoDevices.length > 0) setSelectedCameraId(videoDevices[0].deviceId);
     } catch (error) {
       console.error(error);
+      setSystemStatus("Webcam hardware block encountered.");
     }
   };
 
-  // 3. Start Selected Camera
+  // 3. Hot-Swapping Streams based on Dropdown Selections
   useEffect(() => {
     if (!selectedCameraId) return;
     const startStream = async () => {
@@ -126,22 +104,56 @@ export default function WidgetPage() {
     startStream();
   }, [selectedCameraId]);
 
-  // 4. Tracking Loop
+  // 4. Combined Frame Prediction and Multi-Module Processing
   const predictWebcam = useCallback(() => {
     const video = videoRef.current;
-    if (!video || !handLandmarkerRef.current || video.videoWidth <= 2) {
+    const canvas = canvasRef.current;
+    
+    if (
+      !video || 
+      !canvas || 
+      !faceLandmarkerRef.current || 
+      !poseLandmarkerRef.current || 
+      video.readyState < 2 || 
+      video.videoWidth <= 2
+    ) {
       requestRef.current = requestAnimationFrame(predictWebcam);
       return;
     }
 
-    const startTimeMs = performance.now();
-    const results = handLandmarkerRef.current.detectForVideo(video, startTimeMs);
+    // CRITICAL FIX: Only run the AI if the video has actually moved forward to a new frame
+    if (video.currentTime !== lastVideoTimeRef.current) {
+      lastVideoTimeRef.current = video.currentTime;
 
-    if (results.landmarks && results.landmarks.length > 0) {
-      // SILENTLY UPDATE THE REF FOR THREE.JS (No React Re-renders!)
-      latestLandmarks.current = results.landmarks[0];
-    } else {
-      latestLandmarks.current = null;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
+      if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // MediaPipe requires strictly increasing timestamps
+      const startTimeMs = performance.now();
+
+      try {
+        const faceResults = faceLandmarkerRef.current.detectForVideo(video, startTimeMs);
+        const poseResults = poseLandmarkerRef.current.detectForVideo(video, startTimeMs);
+
+        if (faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
+          const faceData = faceResults.faceLandmarks[0];
+          JewelryModules.renderForehead(faceData, ctx, canvas);
+          JewelryModules.renderNosepin(faceData, ctx, canvas);
+          JewelryModules.renderEarrings(faceData, ctx, canvas);
+        }
+
+        if (poseResults.landmarks && poseResults.landmarks.length > 0) {
+          const poseData = poseResults.landmarks[0];
+          JewelryModules.renderNecklace(poseData, ctx, canvas);
+        }
+      } catch (e) {
+        // Silently catch the transient NORM_RECT frame drops during hardware warmup
+      }
     }
 
     requestRef.current = requestAnimationFrame(predictWebcam);
@@ -149,16 +161,24 @@ export default function WidgetPage() {
 
   const handleVideoLoad = () => {
     if (videoRef.current) {
-      setSystemStatus("Stream active. 3D Engine running.");
-      videoRef.current.play();
-      predictWebcam();
+      setSystemStatus("System Active. Processing Multi-Model Engine.");
+      
+      // Start the video stream
+      videoRef.current.play().then(() => {
+        // Wait 150 milliseconds for the hardware buffer to actually push pixels
+        // before firing the first AI prediction frame.
+        setTimeout(() => {
+          predictWebcam();
+        }, 150);
+      }).catch((err) => {
+        console.error("Camera play interrupted:", err);
+      });
     }
   };
 
   return (
     <div className="relative w-full h-screen bg-zinc-950 flex flex-col items-center overflow-hidden">
       
-      {/* Visual Camera Layer */}
       <video
         ref={videoRef}
         className="absolute w-full h-full object-cover scale-x-[-1]"
@@ -167,29 +187,23 @@ export default function WidgetPage() {
         onLoadedData={handleVideoLoad}
       ></video>
 
-      {/* 3D WebGL Canvas Layer */}
-      <div className="absolute w-full h-full z-10 pointer-events-none scale-x-[-1]">
-        <Canvas camera={{ position: [0, 0, 5], fov: 50 }}>
-          <ambientLight intensity={1.5} />
-          <directionalLight position={[10, 10, 5]} intensity={2} />
-          {/* Inject the jewelry model and pass the silently updating ref */}
-          <JewelryModel landmarkRef={latestLandmarks} />
-        </Canvas>
-      </div>
+      <canvas
+        ref={canvasRef}
+        className="absolute w-full h-full object-cover scale-x-[-1] z-10 pointer-events-none"
+      ></canvas>
 
-      {/* Top Controls Overlay */}
       <div className="absolute top-0 w-full p-4 bg-gradient-to-b from-black/80 to-transparent z-20 flex flex-col items-center gap-4">
         {modelLoaded && cameras.length === 0 && (
           <button
             onClick={initializeCameraSystem}
-            className="px-6 py-3 bg-blue-600 text-white font-bold rounded shadow-lg hover:bg-blue-500"
+            className="px-6 py-3 bg-blue-600 text-white font-bold rounded shadow-lg hover:bg-blue-500 transition-colors"
           >
-            Start WebGL Try-On
+            Open 2D Try-On Engine
           </button>
         )}
         {cameras.length > 0 && (
           <select
-            className="bg-zinc-800 text-white p-2 rounded outline-none border border-zinc-600 w-64"
+            className="bg-zinc-800 text-white p-2 rounded outline-none border border-zinc-600 w-64 text-sm"
             value={selectedCameraId}
             onChange={(e) => setSelectedCameraId(e.target.value)}
           >
@@ -198,8 +212,8 @@ export default function WidgetPage() {
         )}
       </div>
 
-      <div className="absolute bottom-10 left-10 z-20 text-xs font-mono text-zinc-500 bg-black/80 p-2 rounded">
-        Status: {systemStatus}
+      <div className="absolute bottom-10 left-10 z-20 text-xs font-mono text-zinc-400 bg-black/80 p-3 rounded-lg border border-zinc-800 shadow-2xl">
+        Status: <span className="text-white">{systemStatus}</span>
       </div>
     </div>
   );
