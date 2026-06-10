@@ -6,77 +6,92 @@ const toPixels = (landmark: { x: number; y: number }, canvas: HTMLCanvasElement)
 });
 
 export const JewelryModules = {
-  // 1. FOREHEAD PENDANT (Maang Tikka)
-  renderForehead: (faceLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
-    if (!faceLandmarks || faceLandmarks.length === 0) return;
-    const centerForehead = toPixels(faceLandmarks[10], canvas);
-    
-    ctx.fillStyle = "#3b82f6"; // Blue placeholder
-    ctx.beginPath(); 
-    ctx.arc(centerForehead.x, centerForehead.y, 8, 0, 2 * Math.PI); 
-    ctx.fill();
-  },
-
-  // 2. NOSEPIN
-  renderNosepin: (faceLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+  // MODULE: NOSEPIN (Now accepts a preloaded HTMLImageElement)
+  renderNosepin: (
+    faceLandmarks: any[], 
+    ctx: CanvasRenderingContext2D, 
+    canvas: HTMLCanvasElement,
+    imgElement: HTMLImageElement | null
+  ) => {
     if (!faceLandmarks || faceLandmarks.length === 0) return;
     const leftNostril = toPixels(faceLandmarks[279], canvas);
     
-    ctx.fillStyle = "#ef4444"; // Red placeholder
-    ctx.beginPath(); 
-    ctx.arc(leftNostril.x, leftNostril.y, 5, 0, 2 * Math.PI); 
-    ctx.fill();
+    if (imgElement && imgElement.complete) {
+      // Define structural dimensions for the nosepin image
+      const size = 20; 
+      
+      // Center the image over the landmark coordinate
+      ctx.drawImage(
+        imgElement,
+        leftNostril.x - size / 2,
+        leftNostril.y - size / 2,
+        size,
+        size
+      );
+    } else {
+      // Fallback placeholder dot if image asset fails to load
+      ctx.fillStyle = "#ef4444";
+      ctx.beginPath(); ctx.arc(leftNostril.x, leftNostril.y, 5, 0, 2 * Math.PI); ctx.fill();
+    }
   },
 
-  // 3. EARRINGS (With Gravity Alignment Alignment Override)
-  renderEarrings: (faceLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+  // MODULE: FOREHEAD PENDANT (Maang Tikka)
+  renderForehead: (faceLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, imgElement: HTMLImageElement | null) => {
+    if (!faceLandmarks || faceLandmarks.length === 0) return;
+    const centerForehead = toPixels(faceLandmarks[10], canvas);
+    
+    if (imgElement && imgElement.complete) {
+      const width = 40;
+      const height = 80; // Typically vertically elongated
+      ctx.drawImage(imgElement, centerForehead.x - width / 2, centerForehead.y, width, height);
+    } else {
+      ctx.fillStyle = "#3b82f6";
+      ctx.beginPath(); ctx.arc(centerForehead.x, centerForehead.y, 8, 0, 2 * Math.PI); ctx.fill();
+    }
+  },
+
+  // MODULE: EARRINGS
+  renderEarrings: (faceLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, imgElement: HTMLImageElement | null) => {
     if (!faceLandmarks || faceLandmarks.length === 0) return;
     const leftEar = toPixels(faceLandmarks[234], canvas);
     const rightEar = toPixels(faceLandmarks[454], canvas);
 
-    const dropLength = 35; // Simulates hanging line
-    ctx.strokeStyle = "#eab308"; // Gold placeholder
-    ctx.lineWidth = 4;
-    
-    // Left Ear: Draws perfectly vertical downwards along the canvas Y-axis
-    ctx.sidebar = "round";
-    ctx.beginPath(); 
-    ctx.moveTo(leftEar.x, leftEar.y); 
-    ctx.lineTo(leftEar.x, leftEar.y + dropLength); 
-    ctx.stroke();
-
-    // Right Ear
-    ctx.beginPath(); 
-    ctx.moveTo(rightEar.x, rightEar.y); 
-    ctx.lineTo(rightEar.x, rightEar.y + dropLength); 
-    ctx.stroke();
+    if (imgElement && imgElement.complete) {
+      const width = 30;
+      const height = 60;
+      
+      // Draw left earring hanging straight down
+      ctx.drawImage(imgElement, leftEar.x - width / 2, leftEar.y, width, height);
+      // Draw right earring hanging straight down
+      ctx.drawImage(imgElement, rightEar.x - width / 2, rightEar.y, width, height);
+    } else {
+      ctx.strokeStyle = "#eab308";
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(leftEar.x, leftEar.y); ctx.lineTo(leftEar.x, leftEar.y + 35); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(rightEar.x, rightEar.y); ctx.lineTo(rightEar.x, rightEar.y + 35); ctx.stroke();
+    }
   },
 
-  // 4. NECKLACE (Using Pose Landmarks to find the center of your collarbones)
-  renderNecklace: (poseLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+  // MODULE: NECKLACE
+  renderNecklace: (poseLandmarks: any[], ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement, imgElement: HTMLImageElement | null) => {
     if (!poseLandmarks || poseLandmarks.length === 0) return;
     
-    // Landmark 11 is Left Shoulder, Landmark 12 is Right Shoulder
     const leftShoulder = toPixels(poseLandmarks[11], canvas);
     const rightShoulder = toPixels(poseLandmarks[12], canvas);
 
-    // Dynamic midpoint calculation (Suprasternal Notch)
     const collarboneX = (leftShoulder.x + rightShoulder.x) / 2;
     const collarboneY = (leftShoulder.y + rightShoulder.y) / 2;
 
-    // Draw Necklace Center hanging mass
-    ctx.fillStyle = "#a855f7"; // Purple placeholder
-    ctx.beginPath(); 
-    ctx.arc(collarboneX, collarboneY, 14, 0, 2 * Math.PI); 
-    ctx.fill();
-    
-    // Draw string loops wrapping out to the shoulders
-    ctx.strokeStyle = "#a855f7";
-    ctx.lineWidth = 3;
-    ctx.beginPath(); 
-    ctx.moveTo(leftShoulder.x, leftShoulder.y); 
-    ctx.lineTo(collarboneX, collarboneY); 
-    ctx.lineTo(rightShoulder.x, rightShoulder.y); 
-    ctx.stroke();
+    if (imgElement && imgElement.complete) {
+      // Scale necklace width relative to the distance between the user's shoulders
+      const shoulderWidth = Math.abs(leftShoulder.x - rightShoulder.x);
+      const width = shoulderWidth * 0.85; // Cover 85% of chest span
+      const height = width * (imgElement.height / imgElement.width); // Maintain image aspect ratio
+
+      ctx.drawImage(imgElement, collarboneX - width / 2, collarboneY - height * 0.2, width, height);
+    } else {
+      ctx.fillStyle = "#a855f7";
+      ctx.beginPath(); ctx.arc(collarboneX, collarboneY, 14, 0, 2 * Math.PI); ctx.fill();
+    }
   }
 };

@@ -2,7 +2,12 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import { FaceLandmarker, PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
+import {
+  FaceLandmarker,
+  PoseLandmarker,
+  FilesetResolver,
+} from "@mediapipe/tasks-vision";
+import { useSearchParams } from "next/navigation";
 import { JewelryModules } from "@/utils/jewelryModules";
 
 export default function WidgetPage() {
@@ -23,33 +28,85 @@ export default function WidgetPage() {
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
   const [systemStatus, setSystemStatus] = useState("Initializing...");
 
+  const searchParams = useSearchParams();
+  const [productConfig, setProductConfig] = useState<any>(null);
+  const activeAssetRef = useRef<HTMLImageElement | null>(null);
+
+  const productConfigRef = useRef<any>(null);
+
+  // The Dynamic API Fetcher
+  useEffect(() => {
+    const apiKey = searchParams.get("api_key");
+    const sku = searchParams.get("sku");
+
+    if (!apiKey || !sku) {
+      setSystemStatus("Missing API Key or SKU in URL.");
+      return;
+    }
+
+    const fetchProductData = async () => {
+      try {
+        setSystemStatus(`Authenticating tenant and fetching SKU: ${sku}...`);
+
+        const response = await fetch(
+          `http://127.0.0.1:8000/api/v1/widget/config?api_key=${apiKey}&sku=${sku}`,
+        );
+
+        if (!response.ok) {
+          throw new Error("Failed to authorize or locate product.");
+        }
+
+        const data = await response.json();
+        setProductConfig(data);
+
+        // NEW: Mirror the payload into our mutable loop buffer instantly
+        productConfigRef.current = data;
+
+        // Load the image dynamically from the URL provided by the backend
+        const img = new Image();
+        img.crossOrigin = "anonymous"; // CRITICAL: Prevents CORS canvas tainting from external URLs
+        img.src = data.image_url;
+        img.onload = () => {
+          activeAssetRef.current = img;
+          setSystemStatus(`Loaded ${data.category} asset successfully.`);
+        };
+      } catch (error) {
+        console.error("API Fetch Error:", error);
+        setSystemStatus("Authentication or Database error.");
+      }
+    };
+
+    fetchProductData();
+  }, [searchParams]);
   // 1. Concurrent Initialization of both AI Models
   useEffect(() => {
     const initializeModels = async () => {
       try {
         setSystemStatus("Downloading Multi-Model AI Bundle...");
         const vision = await FilesetResolver.forVisionTasks(
-          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm",
         );
 
         // Spin up both networks in parallel via native promises
         const [faceModel, poseModel] = await Promise.all([
           FaceLandmarker.createFromOptions(vision, {
             baseOptions: {
-              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
               delegate: "GPU",
             },
             runningMode: "VIDEO",
-            numFaces: 1
+            numFaces: 1,
           }),
           PoseLandmarker.createFromOptions(vision, {
             baseOptions: {
-              modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+              modelAssetPath:
+                "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
               delegate: "GPU",
             },
             runningMode: "VIDEO",
-            numPoses: 1
-          })
+            numPoses: 1,
+          }),
         ]);
 
         faceLandmarkerRef.current = faceModel;
@@ -74,12 +131,17 @@ export default function WidgetPage() {
   // 2. Camera Hardware Discovery & Initial Handshake
   const initializeCameraSystem = async () => {
     try {
-      const initialStream = await navigator.mediaDevices.getUserMedia({ video: true });
+      const initialStream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+      });
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === "videoinput");
+      const videoDevices = devices.filter(
+        (device) => device.kind === "videoinput",
+      );
       setCameras(videoDevices);
-      initialStream.getTracks().forEach(track => track.stop());
-      if (videoDevices.length > 0) setSelectedCameraId(videoDevices[0].deviceId);
+      initialStream.getTracks().forEach((track) => track.stop());
+      if (videoDevices.length > 0)
+        setSelectedCameraId(videoDevices[0].deviceId);
     } catch (error) {
       console.error(error);
       setSystemStatus("Webcam hardware block encountered.");
@@ -90,10 +152,11 @@ export default function WidgetPage() {
   useEffect(() => {
     if (!selectedCameraId) return;
     const startStream = async () => {
-      if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+      if (streamRef.current)
+        streamRef.current.getTracks().forEach((track) => track.stop());
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: selectedCameraId } }
+          video: { deviceId: { exact: selectedCameraId } },
         });
         streamRef.current = newStream;
         if (videoRef.current) videoRef.current.srcObject = newStream;
@@ -108,13 +171,13 @@ export default function WidgetPage() {
   const predictWebcam = useCallback(() => {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    
+
     if (
-      !video || 
-      !canvas || 
-      !faceLandmarkerRef.current || 
-      !poseLandmarkerRef.current || 
-      video.readyState < 2 || 
+      !video ||
+      !canvas ||
+      !faceLandmarkerRef.current ||
+      !poseLandmarkerRef.current ||
+      video.readyState < 2 ||
       video.videoWidth <= 2
     ) {
       requestRef.current = requestAnimationFrame(predictWebcam);
@@ -129,30 +192,70 @@ export default function WidgetPage() {
       if (!ctx) return;
 
       if (canvas.width !== video.videoWidth) canvas.width = video.videoWidth;
-      if (canvas.height !== video.videoHeight) canvas.height = video.videoHeight;
+      if (canvas.height !== video.videoHeight)
+        canvas.height = video.videoHeight;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // MediaPipe requires strictly increasing timestamps
       const startTimeMs = performance.now();
 
+      // Inside your predictWebcam loop, replace the rendering block with this:
       try {
-        const faceResults = faceLandmarkerRef.current.detectForVideo(video, startTimeMs);
-        const poseResults = poseLandmarkerRef.current.detectForVideo(video, startTimeMs);
+        const faceResults = faceLandmarkerRef.current.detectForVideo(
+          video,
+          startTimeMs,
+        );
+        const poseResults = poseLandmarkerRef.current.detectForVideo(
+          video,
+          startTimeMs,
+        );
+
+        // Safely extract the category from our fetched config
+        const category = productConfigRef.current?.category;
 
         if (faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
           const faceData = faceResults.faceLandmarks[0];
-          JewelryModules.renderForehead(faceData, ctx, canvas);
-          JewelryModules.renderNosepin(faceData, ctx, canvas);
-          JewelryModules.renderEarrings(faceData, ctx, canvas);
+
+          // Switchboard: Only render the specific jewelry type requested by the SKU
+          if (category === "forehead") {
+            JewelryModules.renderForehead(
+              faceData,
+              ctx,
+              canvas,
+              activeAssetRef.current,
+            );
+          } else if (category === "nosepin") {
+            JewelryModules.renderNosepin(
+              faceData,
+              ctx,
+              canvas,
+              activeAssetRef.current,
+            );
+          } else if (category === "earring") {
+            JewelryModules.renderEarrings(
+              faceData,
+              ctx,
+              canvas,
+              activeAssetRef.current,
+            );
+          }
         }
 
         if (poseResults.landmarks && poseResults.landmarks.length > 0) {
           const poseData = poseResults.landmarks[0];
-          JewelryModules.renderNecklace(poseData, ctx, canvas);
+
+          if (category === "necklace") {
+            JewelryModules.renderNecklace(
+              poseData,
+              ctx,
+              canvas,
+              activeAssetRef.current,
+            );
+          }
         }
       } catch (e) {
-        // Silently catch the transient NORM_RECT frame drops during hardware warmup
+        // Silently catch transient frame drops
       }
     }
 
@@ -162,23 +265,25 @@ export default function WidgetPage() {
   const handleVideoLoad = () => {
     if (videoRef.current) {
       setSystemStatus("System Active. Processing Multi-Model Engine.");
-      
+
       // Start the video stream
-      videoRef.current.play().then(() => {
-        // Wait 150 milliseconds for the hardware buffer to actually push pixels
-        // before firing the first AI prediction frame.
-        setTimeout(() => {
-          predictWebcam();
-        }, 150);
-      }).catch((err) => {
-        console.error("Camera play interrupted:", err);
-      });
+      videoRef.current
+        .play()
+        .then(() => {
+          // Wait 150 milliseconds for the hardware buffer to actually push pixels
+          // before firing the first AI prediction frame.
+          setTimeout(() => {
+            predictWebcam();
+          }, 150);
+        })
+        .catch((err) => {
+          console.error("Camera play interrupted:", err);
+        });
     }
   };
 
   return (
     <div className="relative w-full h-screen bg-zinc-950 flex flex-col items-center overflow-hidden">
-      
       <video
         ref={videoRef}
         className="absolute w-full h-full object-cover scale-x-[-1]"
@@ -207,7 +312,11 @@ export default function WidgetPage() {
             value={selectedCameraId}
             onChange={(e) => setSelectedCameraId(e.target.value)}
           >
-            {cameras.map((c) => <option key={c.deviceId} value={c.deviceId}>{c.label}</option>)}
+            {cameras.map((c) => (
+              <option key={c.deviceId} value={c.deviceId}>
+                {c.label}
+              </option>
+            ))}
           </select>
         )}
       </div>
