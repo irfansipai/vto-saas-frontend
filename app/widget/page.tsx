@@ -43,12 +43,15 @@ function TryOnWidgetCore() {
     const fetchProductData = async () => {
       try {
         setSystemStatus(`Authenticating tenant and loading SKU: ${sku}...`);
-        const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL;
+        
+        // Sanitize the string to safely remove any accidental trailing slashes
+        const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
         
         if (!apiBaseUrl) {
           throw new Error("Environment variable NEXT_PUBLIC_API_URL is missing.");
         }
 
+        // The URL will now cleanly resolve to ...app/api/v1 without extra slashes
         const response = await fetch(`${apiBaseUrl}/api/v1/widget/config?api_key=${apiKey}&sku=${sku}`);
         if (!response.ok) throw new Error("Failed to authorize token or locate target item.");
 
