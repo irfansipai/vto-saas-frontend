@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { FaceLandmarker, PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { useSearchParams } from "next/navigation";
-import { JewelryModules } from "@/utils/jewelryModules";
+import { JewelryModules } from "@/utils/jewelry";
 
 // --- 1. ISOLATED AR ENGINE COMPONENT ---
 // This component houses all the browser search params and tracking loops safely down the React tree.
@@ -17,13 +17,29 @@ function TryOnWidgetCore() {
   const poseLandmarkerRef = useRef<PoseLandmarker | null>(null);
   const requestRef = useRef<number | null>(null);
   const lastVideoTimeRef = useRef<number>(-1);
+  
+  const TARGET_FPS = 30;
+  const FRAME_MIN_TIME = 1000 / TARGET_FPS;
+  const lastRunTimeRef = useRef<number>(0);
 
   // --- State ---
   const [modelLoaded, setModelLoaded] = useState(false);
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>("");
   const [systemStatus, setSystemStatus] = useState("Initializing...");
-  
+
+  // NEW: Debug tracking control toggles
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  const debugEnabledRef = useRef(false);
+
+  // Synchronized state toggler to keep the prediction loop from trailing behind
+  const toggleDebugSystem = () => {
+    setDebugEnabled((prev) => {
+      debugEnabledRef.current = !prev;
+      return !prev;
+    });
+  };
+
   // --- Dynamic Assets & Configurations ---
   const searchParams = useSearchParams();
   const [productConfig, setProductConfig] = useState<any>(null);
@@ -43,10 +59,10 @@ function TryOnWidgetCore() {
     const fetchProductData = async () => {
       try {
         setSystemStatus(`Authenticating tenant and loading SKU: ${sku}...`);
-        
+
         // Sanitize the string to safely remove any accidental trailing slashes
         const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
-        
+
         if (!apiBaseUrl) {
           throw new Error("Environment variable NEXT_PUBLIC_API_URL is missing.");
         }
@@ -57,11 +73,11 @@ function TryOnWidgetCore() {
 
         const data = await response.json();
         setProductConfig(data);
-        productConfigRef.current = data; 
+        productConfigRef.current = data;
 
         // Safely cache image binary data outside of the React frame state lifecycle
         const img = new Image();
-        img.crossOrigin = "anonymous"; 
+        img.crossOrigin = "anonymous";
         img.src = data.image_url;
         img.onload = () => {
           activeAssetRef.current = img;
@@ -144,7 +160,12 @@ function TryOnWidgetCore() {
       if (streamRef.current) streamRef.current.getTracks().forEach((track) => track.stop());
       try {
         const newStream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: selectedCameraId } },
+          video: { 
+            deviceId: { exact: selectedCameraId },
+            // NEW: Cap the resolution to 720p for massive performance gains
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 }
+          },
         });
         streamRef.current = newStream;
         if (videoRef.current) videoRef.current.srcObject = newStream;
@@ -165,8 +186,21 @@ function TryOnWidgetCore() {
       return;
     }
 
+    // NEW: Calculate exactly how much time has passed since the last AI prediction
+    const now = performance.now();
+    const elapsed = now - lastRunTimeRef.current;
+
+    // Schedule the next frame recursively
+    requestRef.current = requestAnimationFrame(predictWebcam);
+
+    // NEW: If we are running too fast, Abort the frame! (This creates the 30 FPS lock)
+    if (elapsed < FRAME_MIN_TIME) return;
+
     if (video.currentTime !== lastVideoTimeRef.current) {
+      // NEW: Update the throttle clock
+      lastRunTimeRef.current = now - (elapsed % FRAME_MIN_TIME);
       lastVideoTimeRef.current = video.currentTime;
+      
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
@@ -186,25 +220,34 @@ function TryOnWidgetCore() {
           if (category === "forehead") JewelryModules.renderForehead(faceData, ctx, canvas, activeAssetRef.current);
           else if (category === "nosepin") JewelryModules.renderNosepin(faceData, ctx, canvas, activeAssetRef.current);
           else if (category === "earring") JewelryModules.renderEarrings(faceData, ctx, canvas, activeAssetRef.current);
-        }
 
+          if (debugEnabledRef.current) {
+            JewelryModules.drawDebug3D(faceData, ctx, canvas, category || "unknown", !!activeAssetRef.current);
+          }
+        }
+        
         if (poseResults.landmarks && poseResults.landmarks.length > 0) {
           const poseData = poseResults.landmarks[0];
-          if (category === "necklace") JewelryModules.renderNecklace(poseData, ctx, canvas, activeAssetRef.current);
+          if (category === "necklace") {
+            JewelryModules.renderNecklace(poseData, ctx, canvas, activeAssetRef.current);
+            if (debugEnabledRef.current) {
+              JewelryModules.drawPoseDebug3D(poseData, ctx, canvas, !!activeAssetRef.current);
+            }
+          }
         }
+        
       } catch (e) {
         // Drop runtime frame misses silently
       }
     }
-    requestRef.current = requestAnimationFrame(predictWebcam);
   }, []);
 
   const handleVideoLoad = () => {
     if (videoRef.current) {
       setSystemStatus("System Active. Processing Multi-Model Engine.");
       videoRef.current.play().then(() => {
-          // Wait 150 milliseconds for the hardware buffer to actually push pixels
-          // before firing the first AI prediction frame.
+        // Wait 150 milliseconds for the hardware buffer to actually push pixels
+        // before firing the first AI prediction frame.
         setTimeout(() => { predictWebcam(); }, 150);
       }).catch((err) => { console.error("Video run interrupted:", err); });
     }
@@ -222,9 +265,22 @@ function TryOnWidgetCore() {
         )}
         {cameras.length > 0 && (
           <select className="bg-zinc-800 text-white p-2 rounded outline-none border border-zinc-600 w-64 text-sm" value={selectedCameraId} onChange={(e) => setSelectedCameraId(e.target.value)}>
-            {cameras.map((c) => ( <option key={c.deviceId} value={c.deviceId}>{c.label}</option> ))}
+            {cameras.map((c) => (<option key={c.deviceId} value={c.deviceId}>{c.label}</option>))}
           </select>
         )}
+        {/* NEW: THE HIGH-VISIBILITY HUD TOGGLE BUTTON */}
+          {modelLoaded && (
+            <button
+              onClick={toggleDebugSystem}
+              className={`px-4 py-2 rounded text-xs font-mono font-bold border transition-all ${
+                debugEnabled 
+                  ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.2)]" 
+                  : "bg-zinc-900 text-zinc-400 border-zinc-700 hover:text-white hover:border-zinc-500"
+              }`}
+            >
+              {debugEnabled ? "DISABLE DEBUG HUD" : "ENABLE DEBUG HUD"}
+            </button>
+          )}
       </div>
       <div className="absolute bottom-10 left-10 z-20 text-xs font-mono text-zinc-400 bg-black/80 p-3 rounded-lg border border-zinc-800 shadow-2xl">
         Status: <span className="text-white">{systemStatus}</span>
