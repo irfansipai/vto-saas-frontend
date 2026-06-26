@@ -8,6 +8,7 @@ import { api } from "@/lib/api"
 interface UserData {
   id: string
   email: string
+  full_name?: string
   is_active: boolean
   is_verified: boolean
   is_admin?: boolean
@@ -15,7 +16,7 @@ interface UserData {
 
 interface AuthContextType {
   user: UserData | null
-  isLoading: boolean
+  loading: boolean; // Just keep this
   login: (email: string, password: string) => Promise<void>
   logout: () => void
   refreshUser: () => Promise<void>
@@ -78,7 +79,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, logout, refreshUser }}>
+   <AuthContext.Provider value={{ user, loading: isLoading, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )
